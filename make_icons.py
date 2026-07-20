@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""icon.svg と同じ図柄のPNGアイコンを標準ライブラリだけで生成する(初回セットアップ用)"""
+"""icon.svg と同じ図柄(スピードライン+◎)のPNGアイコンを標準ライブラリだけで生成する"""
 import os
 import math
 import zlib
@@ -8,43 +8,63 @@ import struct
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 BG = (15, 16, 19)        # #0f1013
+LINE_DIM = (47, 79, 66)  # #2f4f42
+LINE_MID = (26, 125, 82)  # #1a7d52
 RING = (31, 174, 110)    # #1fae6e
 DOT = (233, 231, 226)    # #e9e7e2
+
+# icon.svg と同じ座標系(512基準): (x, y, w, h, color)
+BARS = [
+    (72, 176, 150, 24, LINE_DIM),
+    (72, 244, 178, 24, LINE_MID),  # 先端は輪のストローク(237〜257)の下に隠れる
+    (72, 312, 150, 24, LINE_DIM),
+]
+RING_C, RING_R, RING_HW = (344, 256), 94, 13  # stroke-width 26 の半分
+DOT_R = 42
 
 
 def clamp01(v):
     return 0.0 if v < 0 else 1.0 if v > 1 else v
 
 
+def rrect_sd(px, py, cx, cy, hw, hh, r):
+    """角丸四角の符号付き距離(負が内側)"""
+    qx = abs(px - cx) - (hw - r)
+    qy = abs(py - cy) - (hh - r)
+    return math.hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - r
+
+
+def over(base, color, a):
+    return tuple(b + (c - b) * a for b, c in zip(base, color))
+
+
 def make(size, path, rounded=True):
     s = size / 512.0
-    cx = cy = size / 2.0
-    corner = 100 * s
     half = size / 2.0
-    ring_r, ring_hw = 146 * s, 17 * s
-    dot_r = 60 * s
+    corner = 100 * s
+    rc = (RING_C[0] * s, RING_C[1] * s)
+    ring_r, ring_hw, dot_r = RING_R * s, RING_HW * s, DOT_R * s
+    bars = [(x * s, y * s, w * s, h * s, col) for x, y, w, h, col in BARS]
 
     rows = []
     for y in range(size):
         row = bytearray([0])  # filter type 0
         for x in range(size):
             px, py = x + 0.5, y + 0.5
-            # 角丸四角のSDF
-            qx = abs(px - cx) - (half - corner)
-            qy = abs(py - cy) - (half - corner)
-            d_rect = math.hypot(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - corner
-            a_rect = clamp01(0.5 - d_rect) if rounded else 1.0
-            d = math.hypot(px - cx, py - cy)
-            a_ring = clamp01(0.5 + (ring_hw - abs(d - ring_r)))
-            a_dot = clamp01(0.5 + (dot_r - d))
-            r, g, b = BG
-            r = r + (RING[0] - r) * a_ring
-            g = g + (RING[1] - g) * a_ring
-            b = b + (RING[2] - b) * a_ring
-            r = r + (DOT[0] - r) * a_dot
-            g = g + (DOT[1] - g) * a_dot
-            b = b + (DOT[2] - b) * a_dot
-            row += bytes((int(r + 0.5), int(g + 0.5), int(b + 0.5), int(a_rect * 255 + 0.5)))
+            col = BG
+            for bx, by, bw, bh, bcol in bars:
+                d = rrect_sd(px, py, bx + bw / 2, by + bh / 2, bw / 2, bh / 2, bh / 2)
+                col = over(col, bcol, clamp01(0.5 - d))
+            dc = math.hypot(px - rc[0], py - rc[1])
+            col = over(col, RING, clamp01(0.5 + (ring_hw - abs(dc - ring_r))))
+            col = over(col, DOT, clamp01(0.5 + (dot_r - dc)))
+            if rounded:
+                d = rrect_sd(px, py, half, half, half, half, corner)
+                alpha = clamp01(0.5 - d)
+            else:
+                alpha = 1.0
+            row += bytes((int(col[0] + 0.5), int(col[1] + 0.5), int(col[2] + 0.5),
+                          int(alpha * 255 + 0.5)))
         rows.append(bytes(row))
 
     raw = b"".join(rows)
