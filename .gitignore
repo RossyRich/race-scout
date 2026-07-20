@@ -1,0 +1,4 @@
+data/
+predictions/tmp_*.json
+__pycache__/
+.DS_Store
