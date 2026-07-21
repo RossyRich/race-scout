@@ -170,6 +170,9 @@ summary::-webkit-details-marker{display:none}
 .restbl td b{color:var(--accent)}
 .restbl .totrow td{font-family:Oswald,sans-serif;font-size:13px;color:var(--sub)}
 .restbl .totrow td.plus{color:var(--gold);font-weight:600}
+.restbl .totrow th{color:var(--text);font-size:11.5px}
+.restbl td.tot{color:var(--text);font-weight:600;border-left:1px solid var(--line)}
+.restbl td.tot.plus{color:var(--gold)}
 .resnote{font-size:10.5px;color:#5c5f6a;margin:6px 2px 0;line-height:1.6}
 .resrace{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin-bottom:8px}
 .resrace.hit{border-color:#2c5a44}
@@ -431,15 +434,20 @@ async function renderResults(){
     return;
   }
   const agg={};
-  ["S","A","B","C"].forEach(c=>{agg[c]={};bkeys.forEach(k=>agg[c][k]={hit:0,lose:0});});
+  ["S","A","B","C"].forEach(c=>{agg[c]={};bkeys.forEach(k=>agg[c][k]={hit:0,lose:0,cost:0,ret:0});});
   const tot={};bkeys.forEach(k=>tot[k]={hit:0,lose:0,cost:0,ret:0});
+  const raceByConf={S:0,A:0,B:0,C:0};
   let raceCount=0;
   days.forEach(d=>d.block.races.forEach(r=>{
     raceCount++;
+    const conf=raceByConf[r.confidence]!==undefined?r.confidence:"B";
+    raceByConf[conf]++;
     bkeys.forEach(k=>{
       const b=r.bets[k];if(!b||!b.points)return;
-      const c=agg[r.confidence]||agg.B;
+      const c=agg[conf];
       b.hit?c[k].hit++:c[k].lose++;
+      c[k].cost+=b.points*100;
+      c[k].ret+=b.payout;
       b.hit?tot[k].hit++:tot[k].lose++;
       tot[k].cost+=b.points*100;
       tot[k].ret+=b.payout;
@@ -463,6 +471,35 @@ async function renderResults(){
     return `<td class="${pct>=100?"plus":""}">${pct}%</td>`;
   }).join("")}</tr></table></div>
   <p class="resnote">勝敗は「そのレースの買い目のどれかが的中したか」。回収率は全買い目を100円ずつ買った場合。</p>`;
+
+  // 自信度のしきい値別 回収率（Sのみ / A以上 / B以上 / 全部）
+  const TIERS=[
+    {label:"Sのみ", confs:["S"]},
+    {label:"A以上", confs:["S","A"]},
+    {label:"B以上", confs:["S","A","B"]},
+    {label:"全部", confs:["S","A","B","C"]},
+  ];
+  html+=`<div class="restitle">買う自信度を絞った場合の回収率</div>
+  <div class="tblwrap"><table class="restbl">
+  <tr><th>買う範囲</th><th>レース</th>${bkeys.map(k=>`<th>${blabel[k]}</th>`).join("")}<th>合計</th></tr>`;
+  TIERS.forEach(t=>{
+    let allCost=0,allRet=0;
+    const cells=bkeys.map(k=>{
+      let cost=0,ret=0;
+      t.confs.forEach(c=>{cost+=agg[c][k].cost;ret+=agg[c][k].ret;});
+      allCost+=cost;allRet+=ret;
+      if(!cost) return "<td>-</td>";
+      const pct=Math.round(ret/cost*100);
+      return `<td class="${pct>=100?"plus":""}">${pct}%</td>`;
+    }).join("");
+    const nr=t.confs.reduce((s,c)=>s+raceByConf[c],0);
+    const allPct=allCost?Math.round(allRet/allCost*100):null;
+    html+=`<tr class="totrow"><th style="white-space:nowrap">${t.label}</th>
+      <td style="color:var(--sub)">${nr}R</td>${cells}
+      <td class="tot ${allPct!==null&&allPct>=100?"plus":""}">${allPct!==null?allPct+"%":"-"}</td></tr>`;
+  });
+  html+=`</table></div>
+  <p class="resnote">「A以上」＝自信度SとAのレースだけを買った場合。合計は全券種を100円ずつ買った合算。</p>`;
 
   days.forEach(d=>{
     const f=fmtDate(d.date);
