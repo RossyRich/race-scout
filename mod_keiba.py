@@ -108,7 +108,7 @@ def parse_past(cell):
     cell = _no_comment(cell)
 
     def pick(cls):
-        m = re.search(r'class="' + cls + r'"[^>]*>(.*?)</div>', cell, re.S)
+        m = re.search(r'class="' + cls + r'(?:\s[^"]*)?"[^>]*>(.*?)</div>', cell, re.S)
         return strip_tags(m.group(1)) if m else ""
 
     d1 = pick("Data01")   # 2026.06.22 金沢 6
@@ -202,7 +202,8 @@ def parse_race(race_id, html, grade=""):
         e["sub"] = jockey[:12]
 
         pasts = []
-        for p in re.findall(r'<td[^>]*class="Past"[^>]*>(.*?)</td>', row, re.S):
+        # class="Past Rank01" のように着順クラスが付く（1〜3着）セルも拾う
+        for p in re.findall(r'<td[^>]*class="Past(?:\s[^"]*)?"[^>]*>(.*?)</td>', row, re.S):
             t = parse_past(p)
             if t:
                 pasts.append(t)
