@@ -1,0 +1,48 @@
+name: results
+
+# 前日以前の結果を集計して成績タブを更新する。
+# ミッドナイト競輪が23:25頃まであるため、日付が変わってから走らせる。
+# AI判断を一切使わない純Python処理なので、Macが閉じていても必ず動く。
+on:
+  workflow_dispatch:
+  schedule:
+    # 16:00 UTC = 翌01:00 JST
+    - cron: "0 16 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: race-scout-write
+  cancel-in-progress: false
+
+jobs:
+  results:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 未集計分を集計
+        run: python3 results.py --auto
+
+      - name: コミットして push
+        run: |
+          git config user.name "race-scout-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A results/
+          if git diff --cached --quiet; then
+            echo "集計対象なし"
+            exit 0
+          fi
+          git commit -m "results: $(TZ=Asia/Tokyo date +%Y-%m-%d) 結果集計"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin main && exit 0
+            echo "push失敗、リトライ $i"
+            sleep 5
+          done
+          exit 1

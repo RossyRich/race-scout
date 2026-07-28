@@ -1,4 +1,5 @@
-data/
+# data/ はGitHub Actionsが収集してコミットし、Claudeの予想タスクがpullで受け取るため管理下に置く
+# （collect.ymlが直近5日分だけ残して古いものを削除する）
 predictions/tmp_*.json
 __pycache__/
 .DS_Store
