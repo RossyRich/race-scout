@@ -1,16 +1,22 @@
 name: collect
 
 # 当日の出走表を収集して data/ にコミットする。
-# 朝5時(JST)に走らせ、6:30のClaude予想タスクが git pull で受け取る。
-# Macの状態に依存しないので、Claudeが動かなくてもデータだけは揃う。
+# Claudeの予想タスク(6:30 JST)が git pull で受け取る。
 #
-# 4種別を並列ジョブで収集する。直列だと約50分かかり（ボートが1場2分×16場で
-# 最も重い）、実測でタイムアウトしたため。並列化で実時間はボート分だけになる。
+# 【GitHubのcron遅延について】
+# 実測でスケジュール時刻から常時3〜4時間遅れて発火する（196〜234分、最悪514分）。
+# そのため cron は「朝5時に走らせたいから20:00 UTC」ではなく、遅延を織り込んで
+# 大幅に前倒ししてある。それでも間に合わない場合はClaude側が自力で収集する
+# フォールバックが働くので、サイトの更新自体は落ちない。
+#
+# 【Claudeとの二重収集を避ける仕組み】
+# Claudeが先に収集して push 済みなら、そのファイルは上書きしない（cp -n）。
+# コミット処理は毎回リモート最新から作り直すので、競合で失敗することがない。
 on:
   workflow_dispatch:
   schedule:
-    # 20:00 UTC = 翌05:00 JST（GitHubのcronは遅延することがあるため余裕を持たせる）
-    - cron: "0 20 * * *"
+    # 16:00 UTC = 翌01:00 JST。遅延3〜4時間を見込んで朝4〜5時JST着を狙う。
+    - cron: "0 16 * * *"
 
 permissions:
   contents: write
@@ -34,15 +40,23 @@ jobs:
       - name: ${{ matrix.type }} を収集
         run: |
           DATE=$(TZ=Asia/Tokyo date +%Y%m%d)
+          # Claudeが先に収集済みならスクレイプ自体を省く（無駄な負荷をかけない）
+          if [ -f "data/${DATE}_${{ matrix.type }}.json" ]; then
+            echo "収集済みのためスキップ: ${DATE}_${{ matrix.type }}.json"
+            rm -f data/*.json   # artifactに上げないよう掃除
+            exit 0
+          fi
           echo "収集対象: $DATE / ${{ matrix.type }}"
           # 開催なしなら終了コード1で落ちるだけなので握りつぶす
           python3 scrape.py "$DATE" "${{ matrix.type }}" || echo "(${{ matrix.type }}の開催なし)"
+          # 当日分以外はartifactに含めない
+          find data -name '*.json' ! -name "${DATE}_*" -delete
 
       - uses: actions/upload-artifact@v4
         with:
           name: data-${{ matrix.type }}
           path: data/*.json
-          # 開催なしの種別はファイルが出ないので、無くてもエラーにしない
+          # 開催なし・スキップ時はファイルが出ないので、無くてもエラーにしない
           if-no-files-found: ignore
           retention-days: 1
 
@@ -61,31 +75,48 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: data-*
-          path: data/
+          # data/ に直接置かず、退避用ディレクトリに集める。
+          # コミット処理がリモート最新から作り直すため、素材は別の場所に要る。
+          path: staging/
           merge-multiple: true
 
       - name: 収集結果を確認
-        run: ls -la data/ || echo "(データなし)"
-
-      - name: 古いデータを整理（直近5日分のみ保持）
-        run: |
-          ls -1 data/*.json 2>/dev/null | sed 's/.*\///; s/_.*//' | sort -u | head -n -5 \
-            | while read -r d; do echo "削除: $d"; rm -f "data/${d}_"*.json; done || true
+        run: ls -la staging/ 2>/dev/null || echo "(新規に収集したデータなし)"
 
       - name: コミットして push
         run: |
           git config user.name "race-scout-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add -A data/
-          if git diff --cached --quiet; then
-            echo "変更なし"
-            exit 0
-          fi
-          git commit -m "data: $(TZ=Asia/Tokyo date +%Y-%m-%d) 出走表収集"
-          # Claudeの予想pushと衝突した場合に備えてリベースして再試行
-          for i in 1 2 3; do
-            git pull --rebase --autostash origin main && git push origin main && exit 0
-            echo "push失敗、リトライ $i"
-            sleep 5
+
+          # 毎回リモート最新の状態から作り直すので、Claudeのpushと衝突しない。
+          # 以前は git pull --rebase を使っていたが、競合すると作業ツリーが
+          # 未解決のまま残り、後続のリトライが全て失敗していた。
+          for i in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+
+            # Claudeが既に置いたファイルは上書きしない（-n = no-clobber）。
+            # 予想はそのデータを基に作られているため、後から差し替えない。
+            mkdir -p data
+            cp -n staging/*.json data/ 2>/dev/null || true
+
+            # 古いデータを整理（直近5日分のみ保持）
+            ls -1 data/*.json 2>/dev/null | sed 's/.*\///; s/_.*//' | sort -u | head -n -5 \
+              | while read -r d; do rm -f "data/${d}_"*.json; done || true
+
+            git add -A data/
+            if git diff --cached --quiet; then
+              echo "変更なし（Claudeが収集済み、または開催なし）"
+              exit 0
+            fi
+
+            git commit -q -m "data: $(TZ=Asia/Tokyo date +%Y-%m-%d) 出走表収集"
+            if git push -q origin main; then
+              echo "push成功"
+              exit 0
+            fi
+            echo "リモートが進んでいたので作り直して再試行 ($i/5)"
+            sleep $((i * 5))
           done
+          echo "5回試行しても push できませんでした"
           exit 1
